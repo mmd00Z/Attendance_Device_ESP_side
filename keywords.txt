@@ -1,0 +1,27 @@
+####### KEYWORD1 #######
+Student KEYWORD1
+StudentProperty KEYWORD1
+
+####### KEYWORD2 #######
+setName KEYWORD2
+setNumber_phone KEYWORD2
+setUid KEYWORD2
+getName KEYWORD2
+getNumber_phone KEYWORD2
+getUid KEYWORD2
+####
+pack_string_property KEYWORD2
+make_students_in_list KEYWORD2
+unpack_string_property KEYWORD2
+save_property KEYWORD2
+save KEYWORD2
+load_property KEYWORD2
+load KEYWORD2
+
+####### LITERAL1 #######
+NAME LITERAL1
+NUMBER_PHONE LITERAL1
+NUID LITERAL1
+DEFAULT_PATH_NAME LITERAL1
+DEFAULT_PATH_NUMBER_PHONE LITERAL1
+DEFAULT_PATH_NUID LITERAL1
