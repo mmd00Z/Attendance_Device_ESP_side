@@ -1,8 +1,9 @@
 #ifndef SETTINGS_H_INCLUDED
 #define SETTINGS_H_INCLUDED
 
-#include <FS.h>
 #include <Arduino.h>
+#include <FS.h>
+#include <ArduinoJson.h>
 
 #define DEFAULT_CONFIG_FILE_NAME "/config.txt"
 
@@ -31,16 +32,12 @@ class Config {
   bool call_to_parent;
   bool massage_to_parent;
 
-  // Constructor
   Config(int debuger);
 
-  // Save the configurations in JSON format file
   bool saveConfigurations(String path);
 
-  // Load the configurations from JSON format file
   bool loadConfigurations(String path);
 
-  // Print the all config variabel to Serial monitor
   void printAllConfigs();
 };
 

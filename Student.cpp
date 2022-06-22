@@ -1,16 +1,26 @@
 #include "Student.h"
 
-Student::Student(){}
+Student::Student(){
+  timeToCome.hour = 0;
+  timeToCome.minute = 0;
+  timeToCome.seconds = 0;
+}
 
 Student::Student(String Fname, String Lname){
   this-> first_name = Fname;
   this-> last_name = Lname;
+  timeToCome.hour = 0;
+  timeToCome.minute = 0;
+  timeToCome.seconds = 0;
 }
 
 Student::Student(String Fname, String Lname, String number_phone){
   this-> first_name = Fname;
   this-> last_name = Lname;
   this-> number_phone = number_phone;
+  timeToCome.hour = 0;
+  timeToCome.minute = 0;
+  timeToCome.seconds = 0;
 }
 
 Student::Student(String Fname, String Lname, String number_phone, String national_code){
@@ -18,6 +28,9 @@ Student::Student(String Fname, String Lname, String number_phone, String nationa
   this-> last_name = Lname;
   this -> number_phone = number_phone;   
   this -> national_code = national_code;
+  timeToCome.hour = 0;
+  timeToCome.minute = 0;
+  timeToCome.seconds = 0;
 }           
 
 // Seters
@@ -35,6 +48,12 @@ void Student::setNumberPhone(String number_phone) {
 
 void Student::setNationalCode(String national_code) {
   this -> national_code = national_code;
+}
+
+void Student::setTimeToCome(int h, int m, int s) {
+  this->timeToCome.hour = h;
+  this->timeToCome.minute = m;
+  this->timeToCome.seconds = s;
 }
 
 // Geters

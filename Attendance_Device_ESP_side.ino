@@ -1,36 +1,71 @@
-#include <ArduinoJson.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <WiFiUdp.h>
 #include <NTPClient.h>
+#include <ESP8266WiFi.h>
+#include <WiFiUdp.h>
+#include <ESP8266WebServer.h>
+#include <SNTPtime.h>
 #include <SPI.h>
+#include <SD.h>
 #include <MFRC522.h>
+#include <ArduinoJson.h>
+#include <UnixTime.h>
 #include "db_methods.h"
 #include "network_data.h"
 #include "Config.h"
 
+
 #define BLOCKA_ADDRES 2
 #define TRAILER_BLOCK 3
-#define SS_PIN 2
+#define RFID_SS_PIN 2
 #define RST_PIN 4
+#define SD_CARD_SS_PIN 16
+#define SELECTED_NTP_SERVER "ntp.day.ir"
+#define IRAN_UTC_OFFSET 4.5
+#define DIRECTOR_PATH_NAME "/db/"
+/*
+ "ntp.day.ir"
+ "pool.ntp.org"
+ "pool.ntp.org"
+ "pool.ntp.org"
+ "pool.ntp.org"
+*/
 
-const long utcOffsetInSeconds = 3600 * 3.5;
+const long utcOffsetInSeconds = 3600 * IRAN_UTC_OFFSET;
+const int UTC_OFFSET =  4.5;
 
-IPAddress local_IP(192, 168, 43, 100); // Static IP
-// IPAddress local_IP(192, 168, 146, 150); // Static IP
-IPAddress gateway (192, 168, 43, 1);   // GatewayIP
-// IPAddress gateway (192, 168, 146, 131);   // GatewayIP
-IPAddress subnet  (255, 255, 255, 0);  // Subnet MASK
+//Week Days
+const String weekDays[7]={"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
-ESP8266WebServer server(80);
+//Month names
+const String months[12]={"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
+
 
 LinkedList <Student*> students = LinkedList <Student*>();
 LinkedList <Student*> present_list = LinkedList <Student*>();
+String present_str = "";
 
-MFRC522 mfrc522(SS_PIN, RST_PIN);
+const IPAddress local_IP(192, 168, 43, 100); // Static IP
+// const IPAddress local_IP(192, 168, 146, 150); // Static IP
+const IPAddress gateway (192, 168, 43, 1);   // GatewayIP
+// const IPAddress gateway (192, 168, 146, 131);   // GatewayIP
+const IPAddress subnet  (255, 255, 255, 0);  // Subnet MASK
+const IPAddress DNS1(8, 8, 8, 8); //dns 1
+const IPAddress DNS2(8, 8, 8, 8); //dns 2
+
+// Create a WebServer object on port 80
+ESP8266WebServer server(80);
+// Create a MFRC522 RFID reader object 
+MFRC522 mfrc522(RFID_SS_PIN, RST_PIN);
+// Create a Configuration object. it's configs and settings data handeler
+Config conf(0);
+
 WiFiUDP ntpUDP;
-Config conf(5);
-NTPClient local_time(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+// NTPClient timeClient("europe.pool.ntp.org", 3600, 60000);
+// SNTPtime ntpTime("ntp.day.ir");
+// SNTPtime ntpTime(SELECTED_NTP_SERVER);
+// strDateTime dateTime;
+
+UnixTime date_time(0);
 
 void setup() {
   // conf.init();
@@ -42,23 +77,30 @@ void setup() {
     return;
   }
   conf.loadConfigurations(DEFAULT_CONFIG_FILE_NAME);
-  Serial.println(printContentFile(DEFAULT_CONFIG_FILE_NAME));
-  Serial.println("some loaded data: ");
-  Serial.println(conf.access_password);
-  Serial.println(conf.email_address);
-  Serial.println(conf.ssid);
-  Serial.println(conf.password);
-  Serial.println(conf.call_to_parent);
-  Serial.println(conf.end_time.hour);
+  Serial.println(printContentFileFromSPIFFS(DEFAULT_CONFIG_FILE_NAME));
 
   SPI.begin();
   mfrc522.PCD_Init();
   delay(4); // Optional delay. Some board do need more time after init to be ready, see Readme
   mfrc522.PCD_SetAntennaGain(mfrc522.RxGain_max);
 
+  // pinMode(SD_CARD_SS_PIN, OUTPUT);
+  // digitalWrite(SD_CARD_SS_PIN, 1);
+  // delay(1);
+  if (!SD.begin(SD_CARD_SS_PIN)) 
+    Serial.println("SD init failed!");
+  Serial.println("SD init done.");
+
+  if (!SD.exists("/db")) {
+    Serial.println("db folder is not exist");
+    if(SD.mkdir("db"))
+      Serial.println("db folder made");
+  }
+
   WiFi.disconnect();
-  if (!WiFi.config(local_IP, gateway, subnet)) 
-    Serial.println("Failed to conf.re");
+  WiFi.mode(WIFI_STA);
+  if (!WiFi.config(local_IP, gateway, subnet, DNS1, DNS2)) 
+    Serial.println("WiFi config failed");
     
   Serial.println("Connecting to AccessPoint");
   WiFi.begin(conf.ssid, conf.password);
@@ -81,14 +123,17 @@ void setup() {
 //  SPIFFS.format();
 
   load(&students);
-  if(students.size() > 0) students.remove(0);
-  show_all_student();
+  if(students.size() > 0) 
+    students.remove(0);
 
-  local_time.begin();
+  Student::showAllStudent(&students);
+
+  initCorrectTime();
 }
 
 void loop() {
-  local_time.update();
+  updateDateTime();
+
   server.handleClient();
 
   if(isPresentTime()) {
@@ -101,27 +146,53 @@ void loop() {
         Serial.print("Student is present: ");
         Serial.println(students.get(i)->getNationalCode());
         present_list.add(new Student(students.get(i)->getFirstName(), students.get(i)->getLastName(), students.get(i)->getNumberPhone(), students.get(i)->getNationalCode()));
+        present_list.get(present_list.size()-1)->setTimeToCome(timeClient.getHours(), timeClient.getMinutes(), timeClient.getSeconds());
+        present_str = savePresentToSD(DIRECTOR_PATH_NAME+getFormatedDate()+".txt", &present_list);
+        Serial.println("Presetnt tine ended and preset list saved now");
       }
     }
   }
 }
 
-bool connectToNetwork() {
+void initCorrectTime() {
+  timeClient.begin();
+  timeClient.update();
+  if(timeClient.getEpochTime() < 100000L)
+    ESP.restart();
 }
 
-int8_t isInPresentList(String ncode) { // get national code and return true if the onwner of the ncode be in the present list
-  for(uint16_t i=0; i<present_list.size(); i++) 
-    if(present_list.get(i)->getNationalCode() == ncode)
-      return i;
-  return -1;
+void updateDateTime() {
+  timeClient.update();
+  date_time.getDateTime(timeClient.getEpochTime());
 }
 
-int8_t isInStudentsList(String ncode) { // get national code and return true if the onwner of the ncode be in the students list
-  for(uint16_t i=0; i<students.size(); i++) 
-    if(students.get(i)->getNationalCode() == ncode)
-      return i;
-  return -1;
+/*
+  Version1: [error]
+  2022-1-24
+
+  Version2: [problem: not unique]
+  2022-1-24 --> 2022124
+  2022-12-4 --> 2022124
+  shortest : 2022-1-1 --> 202211   (len=6)
+  bigest : 2022-11-11 --> 20221111 (len=8)
+
+  Version3: [best and complete]
+  whit out 2000:
+  shortest : 2022-1-1 --> 2211   (len=4)
+  bigest : 2022-11-11 --> 221111 (len=6)
+  + saparator: 
+  shortest : 2022-1-1 --> 22Y1M1D   (len=6)
+  bigest : 2022-11-11 --> 22Y11M11D (len=8)
+*/
+String getFormatedDate() {
+  return String(date_time.year-2000)+"Y"+String(date_time.month)+"M"+String(date_time.day);
 }
+
+String getFormatedTime() {
+  return String(date_time.hour)+":"+String(date_time.minute)+":"+String(date_time.second);
+}
+
+bool connectToNetwork() {}
 
 void addStudent() {
   String Fname = server.arg("FName");
@@ -133,13 +204,44 @@ void addStudent() {
   students.add(new Student(Fname, Lname, number_phone, national_code));
   save(&students);
   server.send(200, "text/plain", "Student added!");
-  show_all_student();
+  Student::showAllStudent(&students);
 }
 
 void handlePresent() {
-  String presents = pack_string_property(&present_list, StudentProperty::NATIONAL_CODE, '*');
-  Serial.println(presents);
-  server.send(200, "text/plain", presents);
+  // String presents = pack_string_property(&present_list, StudentProperty::NATIONAL_CODE, '*');
+  String requesteDate = server.arg("date");
+  Serial.print("Requested date: ");
+  Serial.println(requesteDate);
+  Serial.print("My date: ");
+  Serial.println(getFormatedDate());
+  Serial.println("Present data: ");
+  Serial.println(present_str);
+  if(requesteDate == getFormatedDate()) {
+    server.send(200, "text/plain", present_str);
+    Serial.println("today student sended");
+    return;
+  }
+
+  Serial.println("Request an other day present list");
+
+  requesteDate = DIRECTOR_PATH_NAME+requesteDate+".txt";
+  Serial.println(requesteDate);
+  String str_present;
+  if (SD.exists(requesteDate)) {
+    Serial.println("requesteDate is exists");
+    File file = SD.open(requesteDate, FILE_READ);
+    if (!file) {
+      Serial.print("error opening ");
+      Serial.println(requesteDate);
+      str_present = "error";
+    }
+    str_present = file.readString();
+    Serial.println(str_present);
+    file.close();
+  }
+  else str_present = "error";
+  server.send(200, "text/plain", str_present);
+  Serial.println(str_present);
 }
 
 void handleSettings() {
@@ -190,6 +292,20 @@ void manualAttendance() {
     server.send(200, "text/plain", "Attendance began");
   else
     server.send(200, "text/plain", "Attendance is over");
+}
+
+int16_t isInPresentList(String ncode) { // get national code and return true if the onwner of the ncode be in the present list
+  for(uint16_t i=0; i<present_list.size(); i++) 
+    if(present_list.get(i)->getNationalCode() == ncode)
+      return i;
+  return -1;
+}
+
+int16_t isInStudentsList(String ncode) { // get national code and return true if the onwner of the ncode be in the students list
+  for(uint16_t i=0; i<students.size(); i++) 
+    if(students.get(i)->getNationalCode() == ncode)
+      return i;
+  return -1;
 }
 
 void finishCard() {
@@ -261,27 +377,14 @@ bool writeNationalCode(String national_code) {
 
 bool isPresentTime() {
   return conf.isManualStarted || 
-  ((local_time.getHours() > conf.start_time.hour || (local_time.getHours() == conf.start_time.hour && local_time.getMinutes() >= conf.start_time.minute)) 
-  && (local_time.getHours() < conf.end_time.hour || (local_time.getHours() == conf.end_time.hour && local_time.getMinutes() <= conf.end_time.minute)));
+  ((timeClient.getHours() > conf.start_time.hour || (timeClient.getHours() == conf.start_time.hour && timeClient.getMinutes() >= conf.start_time.minute)) 
+  && (timeClient.getHours() < conf.end_time.hour || (timeClient.getHours() == conf.end_time.hour && timeClient.getMinutes() <= conf.end_time.minute)));
   return true;
-}
-
-void show_all_student() {
-  // Serial.println(F("_______________"));
-  if(students.size() <= 0) 
-    Serial.println("No students added!");
-  else {
-    for(int i=0; i<students.size(); i++) {
-      Serial.print(i+1);
-      Serial.println(". "+students.get(i)->getFirstName()+"\t"+students.get(i)->getLastName()+"\t"+students.get(i)->getNumberPhone()+"\t"+students.get(i)->getNationalCode());
-    }
-  }
-  // Serial.println(F("_______________"));
 }
 
 bool print_file_data(String path) {
   if(SPIFFS.exists(path)){
-    File name_file = SPIFFS.open(path, "r");
+    fs::File name_file = SPIFFS.open(path, "r");
     if(!name_file){
       Serial.println("Failed to open name_file for reading");
       return false;
@@ -295,10 +398,10 @@ bool print_file_data(String path) {
   }
 }
 
-bool printContentFile(String path) {
+bool printContentFileFromSPIFFS(String path) {
   if(SPIFFS.exists(path)){
     // file is exist
-    File file = SPIFFS.open(path, "r");
+    fs::File file = SPIFFS.open(path, "r");
     if(!file){ 
       Serial.println("Failed to open file for reading");
       return false;
@@ -308,6 +411,22 @@ bool printContentFile(String path) {
     return true;
   }
   Serial.println("file is not exists");
+  return false;
+}
+
+bool printContentFileFromSD(String file_name) {
+  if (!SD.exists(file_name))
+    return false;
+
+  File file = SD.open(file_name, FILE_READ);
+  if (!file) {
+    Serial.print("error opening ");
+    Serial.println(file_name);
+    while (1);
+  }
+  Serial.println(file.readString());
+  // close the file:
+  file.close();
   return false;
 }
 
