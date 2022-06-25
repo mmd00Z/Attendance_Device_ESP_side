@@ -40,7 +40,7 @@ class Student {
     static void showAllStudent(LinkedList <Student*> *input_student) {
       // Serial.println(F("_______________"));
       if(input_student->size() <= 0) 
-        Serial.println("No input_student->added!");
+        Serial.println("No student added!");
       else {
         Serial.println("Fname\tLname\tnumber\tcode");
         for(int i=0; i<input_student->size(); i++) {

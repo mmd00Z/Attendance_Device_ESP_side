@@ -2,25 +2,44 @@
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include <ESP8266WebServer.h>
-#include <SNTPtime.h>
+#include <Wire.h>
 #include <SPI.h>
 #include <SD.h>
 #include <MFRC522.h>
 #include <ArduinoJson.h>
 #include <UnixTime.h>
+#include <pcmConfig.h>
+#include <pcmRF.h>
+#include <TMRpcm.h>
 #include "db_methods.h"
 #include "network_data.h"
 #include "Config.h"
+#include "SSD1306Wire.h"
+#include "OLEDDisplayUi.h"
+#include "images.h"
+#include "Font.h"
 
+#define OLED_MAIN_FRAME 0
+#define OLED_CONECTING_GIF_1 1
+#define OLED_CONNECTING_GIF_2 2
+#define OLED_CONNECTING_GIF_3 3
+#define OLED_CONNECTING_GIF_4 4
+#define OLED_CONNECTED_FRAME 5
+#define OLED_WELLCOME_FRAME 6
+#define OLED_WAIT_4_ADD 7
+#define OLED_STUDENT_ADDED 8
+#define OLED_ATTENDANCE_ENDED 9
+
+#define BELLA_CIAO "Bella.wav"
 
 #define BLOCKA_ADDRES 2
 #define TRAILER_BLOCK 3
 #define RFID_SS_PIN 2
-#define RST_PIN 4
+#define RST_PIN 0
 #define SD_CARD_SS_PIN 16
-#define SELECTED_NTP_SERVER "ntp.day.ir"
 #define IRAN_UTC_OFFSET 4.5
 #define DIRECTOR_PATH_NAME "/db/"
+#define SELECTED_NTP_SERVER "ntp.day.ir"
 /*
  "ntp.day.ir"
  "pool.ntp.org"
@@ -32,16 +51,19 @@
 const long utcOffsetInSeconds = 3600 * IRAN_UTC_OFFSET;
 const int UTC_OFFSET =  4.5;
 
+uint64_t millis_var = 0;
+bool visible_overlay = true;
+
 //Week Days
 const String weekDays[7]={"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
 //Month names
-const String months[12]={"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
+const String months[12]={"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
 
 LinkedList <Student*> students = LinkedList <Student*>();
 LinkedList <Student*> present_list = LinkedList <Student*>();
-String present_str = "";
+String present_str = "error";
 
 const IPAddress local_IP(192, 168, 43, 100); // Static IP
 // const IPAddress local_IP(192, 168, 146, 150); // Static IP
@@ -60,17 +82,47 @@ Config conf(0);
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
-// NTPClient timeClient("europe.pool.ntp.org", 3600, 60000);
-// SNTPtime ntpTime("ntp.day.ir");
-// SNTPtime ntpTime(SELECTED_NTP_SERVER);
-// strDateTime dateTime;
 
 UnixTime date_time(0);
 
+TMRpcm audio;
+
+SSD1306Wire display(0x3c, D2, D1); //setup OLED 
+OLEDDisplayUi ui(&display );  //User Interface Defenition
+
+//prototype
+void drawFrame(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y);
+void drawWiFiConnecting0(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y);
+void drawWiFiConnecting1(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y);
+void drawWiFiConnecting2(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y);
+void drawWiFiConnecting3(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y);
+void drawWiFiConnected(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y);
+void drawWellCome(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y);
+void drawWait4Add(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y);
+void drawStudentAdded(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y);
+void drawAttendanceEnded(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y);
+void drawOverlay(OLEDDisplay *display, OLEDDisplayUiState* state);
+
+#define NUMBER_OF_FRAMES 10
+FrameCallback frames[] = {drawFrame, drawWiFiConnecting0, drawWiFiConnecting1, drawWiFiConnecting2, drawWiFiConnecting3, drawWiFiConnected, drawWellCome, drawWait4Add, drawStudentAdded, drawAttendanceEnded};  //Frames Calling
+
+#define NUMBER_OF_OVERLAYS 1
+OverlayCallback overlays[] = {drawOverlay};  // Overlays Calling
+
 void setup() {
+  audio.speakerPin = 15;
   // conf.init();
   Serial.begin(115200);
   Serial.println("SPI begining...");
+
+  ui.init(); //Initialize the User Interface
+  display.clear();
+  ui.setTargetFPS(30); //Setup UI Frames
+  ui.disableAllIndicators(); //Make indicators Off
+  ui.disableAutoTransition(); //Disable auto Transition
+  ui.setFrames(frames, NUMBER_OF_FRAMES);  // SetFrames to show
+  // ui.setTimePerTransition(500);
+  display.flipScreenVertically();
 
   if(!SPIFFS.begin()){
     Serial.println("An Error has occurred while mounting SPIFFS");
@@ -97,21 +149,10 @@ void setup() {
       Serial.println("db folder made");
   }
 
-  WiFi.disconnect();
-  WiFi.mode(WIFI_STA);
-  if (!WiFi.config(local_IP, gateway, subnet, DNS1, DNS2)) 
-    Serial.println("WiFi config failed");
-    
-  Serial.println("Connecting to AccessPoint");
-  WiFi.begin(conf.ssid, conf.password);
-  while (WiFi.status() != WL_CONNECTED){
-    Serial.print(".");
-    delay(200);
-  }
-  Serial.println("WiFi Connected!!");
-  Serial.println("\nIP: "+WiFi.localIP().toString());
-  Serial.println("GatewayIP: "+WiFi.gatewayIP().toString());
-  Serial.println("Hostname: "+WiFi.hostname());
+  audio.play(BELLA_CIAO);
+
+  connectToNetwork();
+  
   server.begin();
 
   // server.on("/", handleRoot);
@@ -129,6 +170,8 @@ void setup() {
   Student::showAllStudent(&students);
 
   initCorrectTime();
+
+  ui.setOverlays(overlays, NUMBER_OF_OVERLAYS);  // SetOverlays to show
 }
 
 void loop() {
@@ -149,62 +192,80 @@ void loop() {
         present_list.get(present_list.size()-1)->setTimeToCome(timeClient.getHours(), timeClient.getMinutes(), timeClient.getSeconds());
         present_str = savePresentToSD(DIRECTOR_PATH_NAME+getFormatedDate()+".txt", &present_list);
         Serial.println("Presetnt tine ended and preset list saved now");
+        ui.switchToFrame(OLED_WELLCOME_FRAME);
+        ui.update();
       }
+      millis_var = millis();
     }
   }
+
+  if(millis()-millis_var > 3000) {
+    ui.switchToFrame(OLED_MAIN_FRAME);
+    ui.update();
+  }
+  
+  display.flipScreenVertically();
+  ui.update();
 }
 
-void initCorrectTime() {
-  timeClient.begin();
-  timeClient.update();
-  if(timeClient.getEpochTime() < 100000L)
-    ESP.restart();
+bool connectToNetwork() {
+  WiFi.disconnect();
+  WiFi.mode(WIFI_STA);
+  if (!WiFi.config(local_IP, gateway, subnet, DNS1, DNS2)) 
+    Serial.println("WiFi config failed");
+    
+  Serial.println("Connecting to AccessPoint");
+  WiFi.begin(conf.ssid, conf.password);
+  uint8_t i = 1;
+  while (WiFi.status() != WL_CONNECTED){
+    ui.switchToFrame(i);
+    ui.update();
+    i = (i >= 4)? 1:i+1;
+    Serial.print(".");
+    delay(350);
+  }
+  ui.switchToFrame(OLED_CONNECTED_FRAME);
+  ui.update();
+  Serial.println("WiFi Connected!!");
+  Serial.println("\nIP: "+WiFi.localIP().toString());
+  Serial.println("GatewayIP: "+WiFi.gatewayIP().toString());
+  Serial.println("Hostname: "+WiFi.hostname());
+  delay(2500);
+  ui.switchToFrame(OLED_MAIN_FRAME);
+  ui.update();
 }
-
-void updateDateTime() {
-  timeClient.update();
-  date_time.getDateTime(timeClient.getEpochTime());
-}
-
-/*
-  Version1: [error]
-  2022-1-24
-
-  Version2: [problem: not unique]
-  2022-1-24 --> 2022124
-  2022-12-4 --> 2022124
-  shortest : 2022-1-1 --> 202211   (len=6)
-  bigest : 2022-11-11 --> 20221111 (len=8)
-
-  Version3: [best and complete]
-  whit out 2000:
-  shortest : 2022-1-1 --> 2211   (len=4)
-  bigest : 2022-11-11 --> 221111 (len=6)
-  + saparator: 
-  shortest : 2022-1-1 --> 22Y1M1D   (len=6)
-  bigest : 2022-11-11 --> 22Y11M11D (len=8)
-*/
-String getFormatedDate() {
-  return String(date_time.year-2000)+"Y"+String(date_time.month)+"M"+String(date_time.day);
-}
-
-String getFormatedTime() {
-  return String(date_time.hour)+":"+String(date_time.minute)+":"+String(date_time.second);
-}
-
-bool connectToNetwork() {}
 
 void addStudent() {
+  // Serial.println("adding student");
   String Fname = server.arg("FName");
   String Lname = server.arg("LName");
   String number_phone = server.arg("Number");
   String national_code = server.arg("Code");
+  // Serial.println("inpormation recived");
+  visible_overlay = false;
+  // Serial.println("visible_overlay");
+  // Serial.println(visible_overlay);
+  // Serial.println("Waiting for Card or fingerprint");
+  delay(1000);
   waitForCard();
+  // Serial.println("card is present");
   writeNationalCode(national_code);
+  // Serial.println("natinonal code wrote on card");
   students.add(new Student(Fname, Lname, number_phone, national_code));
+  // Serial.println("student added to list");
   save(&students);
+  // Serial.println("students saved on SPIFFS");
   server.send(200, "text/plain", "Student added!");
+  // Serial.println("added respons sent");
   Student::showAllStudent(&students);
+  ui.switchToFrame(OLED_STUDENT_ADDED);
+  ui.update();
+  // Serial.println("Student adding complited");
+  delay(3500);
+  visible_overlay = true;
+  ui.switchToFrame(OLED_MAIN_FRAME);
+  ui.update();
+  // Serial.println("back to normal work");
 }
 
 void handlePresent() {
@@ -280,9 +341,9 @@ void handleSettings() {
 }
 
 void resetFactory() {
+  server.send(200, "text/plain", "Reseted Factory");
   Serial.println("Reseted Factory...");
   SPIFFS.format();
-  server.send(200, "text/plain", "Reseted Factory");
   ESP.restart();
 }
 
@@ -292,6 +353,49 @@ void manualAttendance() {
     server.send(200, "text/plain", "Attendance began");
   else
     server.send(200, "text/plain", "Attendance is over");
+}
+
+void initCorrectTime() {
+  timeClient.begin();
+  timeClient.update();
+  if(timeClient.getEpochTime() < 100000L)
+    ESP.restart();
+}
+
+void updateDateTime() {
+  timeClient.update();
+  date_time.getDateTime(timeClient.getEpochTime());
+}
+
+/*
+  Version1: [error]
+  2022-1-24
+
+  Version2: [problem: not unique]
+  2022-1-24 --> 2022124
+  2022-12-4 --> 2022124
+  shortest : 2022-1-1 --> 202211   (len=6)
+  bigest : 2022-11-11 --> 20221111 (len=8)
+
+  Version3: [best and complete]
+  whit out 2000:
+  shortest : 2022-1-1 --> 2211   (len=4)
+  bigest : 2022-11-11 --> 221111 (len=6)
+  + saparator: 
+  shortest : 2022-1-1 --> 22Y1M1D   (len=6)
+  bigest : 2022-11-11 --> 22Y11M11D (len=8)
+*/
+String getFormatedDate() {
+  return String(date_time.year-2000)+"Y"+String(date_time.month)+"M"+String(date_time.day);
+}
+
+String getDate4Overlay() {
+  return String(date_time.day)+" "+months[date_time.month-1];
+}
+
+String getFormatedTime() {
+  return ((date_time.hour > 9)? String(date_time.hour)  :"0"+String(date_time.hour))+":"
+        +((date_time.minute> 9)? String(date_time.minute):"0"+String(date_time.minute));
 }
 
 int16_t isInPresentList(String ncode) { // get national code and return true if the onwner of the ncode be in the present list
@@ -314,8 +418,16 @@ void finishCard() {
 }
 
 void waitForCard() {
-  while (!mfrc522.PICC_IsNewCardPresent());
-  while (!mfrc522.PICC_ReadCardSerial());
+  while (!mfrc522.PICC_IsNewCardPresent()) {
+    ui.switchToFrame(OLED_WAIT_4_ADD);
+    display.flipScreenVertically();
+    ui.update();
+  };
+  while (!mfrc522.PICC_ReadCardSerial()) {
+    ui.switchToFrame(OLED_WAIT_4_ADD);
+    display.flipScreenVertically();
+    ui.update();
+  };
 }
 
 bool isNewCard() {
@@ -380,6 +492,79 @@ bool isPresentTime() {
   ((timeClient.getHours() > conf.start_time.hour || (timeClient.getHours() == conf.start_time.hour && timeClient.getMinutes() >= conf.start_time.minute)) 
   && (timeClient.getHours() < conf.end_time.hour || (timeClient.getHours() == conf.end_time.hour && timeClient.getMinutes() <= conf.end_time.minute)));
   return true;
+}
+
+void drawFrame(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  display->setFont(Irish_Grover_Regular_24);
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->drawString(15+x, 20+y , "Absolute");
+  display->drawString(20+x, 42+y , "Darkess");
+}
+void drawWiFiConnecting0(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  display->drawXbm(x + 39, y + 0, WiFi_Connecting_0_width, WiFi_Connecting_0_height, WiFi_Connecting_0);
+}
+void drawWiFiConnecting1(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  display->drawXbm(x + 39, y + 0, WiFi_Connecting_1_width, WiFi_Connecting_1_height, WiFi_Connecting_1);
+}
+void drawWiFiConnecting2(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  display->drawXbm(x + 39, y + 0, WiFi_Connecting_2_width, WiFi_Connecting_2_height, WiFi_Connecting_2);
+}
+void drawWiFiConnecting3(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  display->drawXbm(x + 39, y + 0, WiFi_Connecting_3_width, WiFi_Connecting_3_height, WiFi_Connecting_3);
+}
+void drawWiFiConnected(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y){
+  display->drawXbm(x + 39, y + 0, WiFi_Connecting_3_width, WiFi_Connecting_3_height, WiFi_Connecting_3);
+  display->setFont(ArialMT_Plain_16);
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->drawString(25, 48, "Connected!");
+}
+void drawWellCome(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y) {
+  display->drawXbm(x + 70, y + 16, smile_width, smile_height, smile);
+  display->setFont(ArialMT_Plain_16);
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->drawString(10, 25, "WELL" );
+  display->drawString(10, 40, "COME!");
+}
+void drawWait4Add(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y) {
+  display->drawXbm(x + 0, y + 16, fingerprint_width, fingerprint_height, fingerprint);
+  display->setFont(ArialMT_Plain_16);
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->drawString(50, 40, "or");
+  display->drawXbm(x + 70, y + 20, RFID_Card_width, RFID_Card_height, RFID_Card);
+
+  display->setFont(Serif_bold_13);
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->drawString(0, 0, "Waiting for..." );
+}
+void drawStudentAdded(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y) {
+  display->drawXbm(x + 42, y + 16, student_added_width, student_added_height, student_added);
+
+  display->setFont(Serif_bold_13);
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->drawString(0, 0, "Student added");
+}
+void drawAttendanceEnded(OLEDDisplay *display, OLEDDisplayUiState* state,int16_t x, int16_t y) {
+  display->drawXbm(x + 42, y + 16, AttendanceTime_Ended_width, AttendanceTime_Ended_height, AttendanceTime_Ended);
+
+  display->setFont(Serif_bold_13);
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->drawString(0, 16, "End" );
+}
+
+void drawOverlay(OLEDDisplay *display, OLEDDisplayUiState* state) {
+  if(visible_overlay) {
+    display->setFont(Serif_bold_13);
+    display->setTextAlignment(TEXT_ALIGN_LEFT);
+    display->drawString(0, 0, getDate4Overlay());
+
+    display->setFont(DSEG7_Classic_Mini_Bold_14);
+    display->setTextAlignment(TEXT_ALIGN_LEFT);
+    display->drawString(75, 0, getFormatedTime());
+  }
+}
+
+void say() {
+
 }
 
 bool print_file_data(String path) {
